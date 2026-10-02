@@ -25,6 +25,7 @@ jobs:
           brew install create-dmg
 
       - name: Build Cogi
+        working-directory: macos
         run: |
           chmod +x scripts/release.sh
           ./scripts/release.sh
@@ -34,6 +35,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            release/Cogi.dmg \
+            macos/release/Cogi.dmg \
             --title "Cogi ${GITHUB_REF_NAME}" \
             --generate-notes
