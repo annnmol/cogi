@@ -11,3 +11,6 @@ Cogi is a lightweight, open-source application that synchronizes clipboard conte
     or you can run:
     ```bash
     xattr -dr com.apple.quarantine /Applications/Cogi.app && open /Applications/Cogi.app
+    ```
+
+Note: This release is currently unsigned/not notarized app, so macOS may show a security warning on first launch.
