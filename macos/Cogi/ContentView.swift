@@ -26,7 +26,7 @@ struct ContentView: View {
 
     private var items: [DetectedClipboardItem] {
         let filtered = clipboardMonitor.recentItems.filter {
-            search.isEmpty || $0.text.localizedCaseInsensitiveContains(search)
+            $0.matchesSearch(search)
         }
         return filtered.filter(\.isPinned) + filtered.filter { !$0.isPinned }
     }
@@ -37,7 +37,7 @@ struct ContentView: View {
     }
 
     private var panelHeight: CGFloat {
-        min(max(CGFloat(max(items.count, 1)) * 30 + 178 + (firstUnpinnedID == nil ? 0 : 9), screenHeight * 0.25), screenHeight * 0.75)
+        min(max(max(items.reduce(0) { $0 + $1.rowHeight }, 30) + 178 + (firstUnpinnedID == nil ? 0 : 9), screenHeight * 0.25), screenHeight * 0.75)
     }
 
     var body: some View {
@@ -66,7 +66,7 @@ struct ContentView: View {
               ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if items.isEmpty {
-                        Text(search.isEmpty ? "Copy plain text to see it here." : "No matching clipboard text.")
+                        Text(search.isEmpty ? "Copy text or an image to see it here." : "No matching clipboard items.")
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 12)
                     } else {
@@ -146,12 +146,32 @@ private struct ClipboardRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Button { monitor.copy(item) } label: {
-                Text(verbatim: preview)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 30)
-                    .contentShape(Rectangle())
+                Group {
+                    if let image = item.image {
+                        HStack(spacing: 8) {
+                            if let thumbnail = NSImage(data: image.thumbnailData) {
+                                Image(nsImage: thumbnail)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 44, height: 40)
+                            } else {
+                                Image(systemName: "photo").frame(width: 44, height: 40)
+                            }
+                            Text("Image").lineLimit(1)
+                            Spacer()
+                            Text(item.lastCopiedAt.formatted(date: .omitted, time: .shortened))
+                                .font(.caption)
+                                .opacity(0.75)
+                        }
+                    } else {
+                        Text(verbatim: preview)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: item.rowHeight)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -168,6 +188,10 @@ private struct ClipboardRow: View {
         .background(RowHoverAnchor { entered, view in
             onHover(entered ? item : nil, entered ? view : nil)
         })
+        .contextMenu {
+            Button(item.isPinned ? "Unpin" : "Pin") { monitor.togglePin(item) }
+            Button("Delete", role: .destructive) { monitor.delete(item) }
+        }
     }
 }
 
@@ -237,9 +261,19 @@ struct ClipboardPreview: View {
     }
 
     private var fullText: some View {
-        Text(verbatim: item.text)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if let image = item.image, let fullImage = NSImage(data: image.data) {
+                Image(nsImage: fullImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 312, height: 312 * CGFloat(image.height) / CGFloat(image.width))
+                    .accessibilityLabel("Clipboard image")
+            } else {
+                Text(verbatim: item.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }
 
@@ -248,6 +282,9 @@ struct ClipboardPreviewDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let image = item.image {
+                Text("Image · \(image.width) × \(image.height) · This session only")
+            }
             Text("Application: \(item.foregroundApplicationName ?? "Unknown")")
                 .help("Foreground application when the clipboard change was detected; macOS does not identify the pasteboard owner.")
             Text("Last copied: \(item.lastCopiedAt.formatted(date: .abbreviated, time: .standard))")

@@ -23,6 +23,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var localEvents: Any?
     private var outsideEvents: Any?
     private var resignObserver: Any?
+    private var menuObservers: [NSObjectProtocol] = []
+    private var isTrackingMenu = false
     private var itemsSubscription: AnyCancellable?
     private var preferencesWindow: NSWindow?
     private var aboutWindow: NSWindow?
@@ -55,6 +57,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.closePopover() }
         }
+        menuObservers = [
+            NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.isTrackingMenu = true }
+            },
+            NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.isTrackingMenu = false }
+            }
+        ]
         itemsSubscription = clipboardMonitor.$recentItems.sink { [weak self] items in
             guard let self else { return }
             if let id = self.previewItemID {
@@ -78,6 +88,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         if let localEvents { NSEvent.removeMonitor(localEvents) }
         if let outsideEvents { NSEvent.removeMonitor(outsideEvents) }
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        menuObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        menuObservers.removeAll()
         localEvents = nil
         outsideEvents = nil
         resignObserver = nil
@@ -119,7 +131,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(rootView: content)
         let items = filteredItems
         let separatorHeight: CGFloat = items.contains(where: \.isPinned) && items.contains(where: { !$0.isPinned }) ? 9 : 0
-        let initialHeight = min(max(CGFloat(max(items.count, 1)) * 30 + 178 + separatorHeight, screenHeight * 0.25), screenHeight * 0.75)
+        let initialHeight = min(max(max(items.reduce(0) { $0 + $1.rowHeight }, 30) + 178 + separatorHeight, screenHeight * 0.25), screenHeight * 0.75)
         popover.contentSize = NSSize(width: 440, height: initialHeight)
         NSApplication.shared.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -200,12 +212,17 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .frame(width: 312)
             .fixedSize(horizontal: false, vertical: true))
         let metadataHeight = ceil(metadata.fittingSize.height)
-        let font = NSFont.systemFont(ofSize: 12)
-        let text = NSAttributedString(string: item.text, attributes: [.font: font])
-        let naturalTextHeight = ceil(text.boundingRect(
-            with: NSSize(width: 312, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        ).height) + 2
+        let naturalTextHeight: CGFloat
+        if let image = item.image {
+            naturalTextHeight = 312 * CGFloat(image.height) / CGFloat(image.width)
+        } else {
+            let font = NSFont.systemFont(ofSize: 12)
+            let text = NSAttributedString(string: item.text, attributes: [.font: font])
+            naturalTextHeight = ceil(text.boundingRect(
+                with: NSSize(width: 312, height: CGFloat.greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            ).height) + 2
+        }
         // Padding, two stack spacings and the native divider are real content;
         // there is no minimum preview-window height.
         let detailsHeight = metadataHeight + 28 + 20 + 1
@@ -259,12 +276,13 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private var filteredItems: [DetectedClipboardItem] {
         let filtered = clipboardMonitor.recentItems.filter {
-            searchQuery.isEmpty || $0.text.localizedCaseInsensitiveContains(searchQuery)
+            $0.matchesSearch(searchQuery)
         }
         return filtered.filter(\.isPinned) + filtered.filter { !$0.isPinned }
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
+        guard !isTrackingMenu else { return event }
         if !popover.isShown {
             guard event.type == .keyDown, let window = event.window,
                   window === preferencesWindow || window === aboutWindow else { return event }

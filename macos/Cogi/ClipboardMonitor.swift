@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 
-struct DetectedClipboardItem: Identifiable, Codable, Sendable {
+struct DetectedClipboardItem: Identifiable, Sendable {
     let id: UUID
     let text: String
     let detectedAt: Date
@@ -10,15 +10,38 @@ struct DetectedClipboardItem: Identifiable, Codable, Sendable {
     let characterCount: Int
     var copyCount = 1
     var isPinned = false
+    let image: TemporaryClipboardImage?
 
-    init(text: String, foregroundApplicationName: String?) {
+    init(text: String = "", image: TemporaryClipboardImage? = nil, foregroundApplicationName: String?, copiedAt: Date = Date()) {
         id = UUID()
         self.text = text
-        let now = Date()
-        detectedAt = now
-        lastCopiedAt = now
+        detectedAt = copiedAt
+        lastCopiedAt = copiedAt
         self.foregroundApplicationName = foregroundApplicationName
         characterCount = text.count
+        self.image = image
+    }
+
+    init(saved: PersistedClipboardItem) {
+        id = saved.id
+        text = saved.text
+        detectedAt = saved.detectedAt
+        lastCopiedAt = saved.lastCopiedAt
+        foregroundApplicationName = saved.foregroundApplicationName
+        characterCount = saved.characterCount
+        copyCount = saved.copyCount
+        isPinned = saved.isPinned
+        image = nil
+    }
+
+    var rowHeight: CGFloat { image == nil ? 26 : 52 }
+
+    func matchesSearch(_ query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        if image != nil {
+            return "Image \(foregroundApplicationName ?? "")".localizedCaseInsensitiveContains(query)
+        }
+        return text.localizedCaseInsensitiveContains(query)
     }
 }
 
@@ -37,6 +60,9 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount = 0
     private var timer: Timer?
+    private let imageQueue = DispatchQueue(label: "com.anmoltanwar.cogi.clipboard-images", qos: .utility)
+    private var isProcessingImage = false
+    private var imageGeneration = UUID()
 
     func start() {
         guard !isRunning else { return }
@@ -75,6 +101,7 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     }
 
     func stop() {
+        imageGeneration = UUID()
         isRunning = false
         timer?.invalidate()
         timer = nil
@@ -85,12 +112,24 @@ final class ClipboardMonitor: NSObject, ObservableObject {
         guard let index = recentItems.firstIndex(where: { $0.id == item.id }) else { return }
 
         let changeCount = pasteboard.changeCount
-        let currentText = pasteboard.string(forType: .string)
-        let alreadyCopied = pasteboard.changeCount == changeCount && currentText == item.text
+        let alreadyCopied: Bool
+        if let image = item.image {
+            let data = pasteboard.data(forType: NSPasteboard.PasteboardType(image.pasteboardType))
+            alreadyCopied = pasteboard.changeCount == changeCount && data == image.data
+        } else {
+            let currentText = pasteboard.string(forType: .string)
+            alreadyCopied = pasteboard.changeCount == changeCount && currentText == item.text
+        }
 
         if !alreadyCopied {
             let ownChangeCount = pasteboard.clearContents()
-            guard pasteboard.setString(item.text, forType: .string) else {
+            let written: Bool
+            if let image = item.image {
+                written = pasteboard.setData(image.data, forType: NSPasteboard.PasteboardType(image.pasteboardType))
+            } else {
+                written = pasteboard.setString(item.text, forType: .string)
+            }
+            guard written else {
                 NSSound.beep()
                 return
             }
@@ -124,6 +163,7 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     }
 
     func clearAll() {
+        imageGeneration = UUID()
         guard hasLoadedHistory else {
             clearWhenLoaded = true
             historyStore.save([])
@@ -132,11 +172,12 @@ final class ClipboardMonitor: NSObject, ObservableObject {
         recentItems.removeAll()
     }
 
-    private static func restore(_ items: [DetectedClipboardItem]) -> [DetectedClipboardItem] {
+    private static func restore(_ items: [PersistedClipboardItem]) -> [DetectedClipboardItem] {
         var seen = Set<UUID>()
         var pinnedCount = 0
         var restored: [DetectedClipboardItem] = []
-        for var item in items {
+        for saved in items {
+            var item = DetectedClipboardItem(saved: saved)
             guard !item.text.isEmpty, seen.insert(item.id).inserted else { continue }
             if item.isPinned {
                 pinnedCount += 1
@@ -149,33 +190,63 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     }
 
     @objc private func checkForChanges() {
+        guard !isProcessingImage else { return }
         let changeCount = pasteboard.changeCount
         guard changeCount != lastChangeCount else { return }
 
-        let text = pasteboard.string(forType: .string)
+        let imageType = pasteboard.availableType(from: [.png, .tiff])
+        let imageData = imageType.flatMap { pasteboard.data(forType: $0) }
+        let text = imageType == nil ? pasteboard.string(forType: .string) : nil
 
-        // Another application can change the pasteboard while text is being read.
-        // Retry on the next tick instead of associating text with the wrong change.
+        // Another application can change the pasteboard while content is read.
+        // Retry on the next tick instead of associating content with the wrong change.
         guard pasteboard.changeCount == changeCount else { return }
         lastChangeCount = changeCount
 
-        guard let text, !text.isEmpty else { return }
-
-        var items = recentItems
         let application = NSWorkspace.shared.frontmostApplication
         let applicationName = application?.processIdentifier == ProcessInfo.processInfo.processIdentifier
             ? nil : application?.localizedName
-        items.insert(DetectedClipboardItem(text: text, foregroundApplicationName: applicationName), at: 0)
+        if let imageType, let imageData {
+            guard !imageData.isEmpty, imageData.count <= TemporaryClipboardImage.maximumDataSize else { return }
+            let copiedAt = Date()
+            let type = imageType.rawValue
+            let generation = imageGeneration
+            isProcessingImage = true
+            imageQueue.async { [weak self] in
+                let image = TemporaryClipboardImage.make(data: imageData, pasteboardType: type)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isProcessingImage = false
+                    guard self.isRunning, self.imageGeneration == generation, let image else { return }
+                    self.insert(DetectedClipboardItem(image: image, foregroundApplicationName: applicationName, copiedAt: copiedAt))
+                }
+            }
+            return
+        }
+        guard let text, !text.isEmpty else { return }
+        insert(DetectedClipboardItem(text: text, foregroundApplicationName: applicationName))
+
+        #if DEBUG
+        print("[Cogi] Clipboard text: \(text.debugDescription)")
+        #endif
+    }
+
+    private func insert(_ item: DetectedClipboardItem) {
+        var items = recentItems
+        // Image preparation is asynchronous; a newer manual copy must remain
+        // above an image captured before that copy.
+        let insertionIndex = item.image == nil ? 0 : items.firstIndex(where: { $0.lastCopiedAt < item.lastCopiedAt }) ?? items.endIndex
+        items.insert(item, at: insertionIndex)
         if items.count > 40,
            let index = items.lastIndex(where: { !$0.isPinned }) {
             items.remove(at: index)
         }
+        var imageBytes = items.reduce(0) { $0 + ($1.image?.data.count ?? 0) }
+        while imageBytes > TemporaryClipboardImage.maximumHistoryDataSize,
+              let index = items.lastIndex(where: { $0.image != nil && !$0.isPinned }) {
+            imageBytes -= items[index].image?.data.count ?? 0
+            items.remove(at: index)
+        }
         recentItems = items
-
-        // Each observed copy is distinct, even when the text matches a previous copy.
-        // Menu copies account for their own change count and do not reach this path.
-        #if DEBUG
-        print("[Cogi] Clipboard text: \(text.debugDescription)")
-        #endif
     }
 }
