@@ -11,6 +11,7 @@ enum PreferencesContent {
         // its settings dependencies. See Resources/Maccy-LICENSE.txt.
         let panes = [
             ("General", "gearshape"),
+            ("Sync", "arrow.triangle.2.circlepath"),
             ("Storage", "externaldrive"),
             ("Appearance", "paintpalette"),
             ("Pins", "pin.fill"),
