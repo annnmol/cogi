@@ -13,7 +13,7 @@ enum PreferencesContent {
             ("General", "gearshape"),
             ("Storage", "externaldrive"),
             ("Appearance", "paintpalette"),
-            ("Pins", "pincircle"),
+            ("Pins", "pin.fill"),
             ("Ignore", "nosign"),
             ("Advanced", "gearshape.2")
         ]
@@ -31,4 +31,5 @@ enum PreferencesContent {
         controller.selectedTabViewItemIndex = 0
         return controller
     }
+
 }
