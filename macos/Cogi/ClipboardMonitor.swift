@@ -4,6 +4,21 @@ import Combine
 struct DetectedClipboardItem: Identifiable {
     let id = UUID()
     let text: String
+    let detectedAt: Date
+    var lastCopiedAt: Date
+    let foregroundApplicationName: String?
+    let characterCount: Int
+    var copyCount = 1
+    var isPinned = false
+
+    init(text: String, foregroundApplicationName: String?) {
+        self.text = text
+        let now = Date()
+        detectedAt = now
+        lastCopiedAt = now
+        self.foregroundApplicationName = foregroundApplicationName
+        characterCount = text.count
+    }
 }
 
 @MainActor
@@ -57,8 +72,29 @@ final class ClipboardMonitor: NSObject, ObservableObject {
             }
         }
 
-        let existingItem = recentItems.remove(at: index)
-        recentItems.insert(existingItem, at: 0)
+        var items = recentItems
+        var existingItem = items.remove(at: index)
+        existingItem.lastCopiedAt = Date()
+        existingItem.copyCount += 1
+        items.insert(existingItem, at: 0)
+        recentItems = items
+    }
+
+    func togglePin(_ item: DetectedClipboardItem) {
+        guard let index = recentItems.firstIndex(where: { $0.id == item.id }) else { return }
+        guard recentItems[index].isPinned || recentItems.filter(\.isPinned).count < 5 else {
+            NSSound.beep()
+            return
+        }
+        recentItems[index].isPinned.toggle()
+    }
+
+    func delete(_ item: DetectedClipboardItem) {
+        recentItems.removeAll { $0.id == item.id }
+    }
+
+    func clearAll() {
+        recentItems.removeAll()
     }
 
     @objc private func checkForChanges() {
@@ -74,10 +110,16 @@ final class ClipboardMonitor: NSObject, ObservableObject {
 
         guard let text, !text.isEmpty else { return }
 
-        recentItems.insert(DetectedClipboardItem(text: text), at: 0)
-        if recentItems.count > 10 {
-            recentItems.removeLast(recentItems.count - 10)
+        var items = recentItems
+        let application = NSWorkspace.shared.frontmostApplication
+        let applicationName = application?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? nil : application?.localizedName
+        items.insert(DetectedClipboardItem(text: text, foregroundApplicationName: applicationName), at: 0)
+        if items.count > 40,
+           let index = items.lastIndex(where: { !$0.isPinned }) {
+            items.remove(at: index)
         }
+        recentItems = items
 
         // Each observed copy is distinct, even when the text matches a previous copy.
         // Menu copies account for their own change count and do not reach this path.

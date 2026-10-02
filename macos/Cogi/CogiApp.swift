@@ -7,8 +7,8 @@ struct CogiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Cogi", systemImage: "doc.on.clipboard") {
-            ContentView(clipboardMonitor: appDelegate.clipboardMonitor)
+        Settings {
+            EmptyView()
         }
     }
 }
@@ -16,12 +16,15 @@ struct CogiApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let clipboardMonitor = ClipboardMonitor()
+    private var menuBarController: MenuBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         clipboardMonitor.start()
+        menuBarController = MenuBarController(clipboardMonitor: clipboardMonitor)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         clipboardMonitor.stop()
+        menuBarController?.stop()
     }
 }
