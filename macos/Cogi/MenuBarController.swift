@@ -375,10 +375,17 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         if let existing {
             window = existing
         } else {
-            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 120), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let size = preferences ? NSSize(width: 560, height: 300) : NSSize(width: 320, height: 120)
+            window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = preferences ? "Cogi Preferences" : "About Cogi"
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: Text(preferences ? "Preferences test window." : "About test window.").padding(24).frame(maxWidth: .infinity, maxHeight: .infinity))
+            if preferences {
+                window.contentViewController = PreferencesContent.makeViewController()
+                window.contentMinSize = NSSize(width: 560, height: 260)
+                window.toolbar?.displayMode = .iconAndLabel
+            } else {
+                window.contentView = NSHostingView(rootView: Text("About test window.").padding(24).frame(maxWidth: .infinity, maxHeight: .infinity))
+            }
             window.center()
             if preferences { preferencesWindow = window } else { aboutWindow = window }
         }
