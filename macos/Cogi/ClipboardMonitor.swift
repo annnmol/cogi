@@ -1,8 +1,8 @@
 import AppKit
 import Combine
 
-struct DetectedClipboardItem: Identifiable {
-    let id = UUID()
+struct DetectedClipboardItem: Identifiable, Codable, Sendable {
+    let id: UUID
     let text: String
     let detectedAt: Date
     var lastCopiedAt: Date
@@ -12,6 +12,7 @@ struct DetectedClipboardItem: Identifiable {
     var isPinned = false
 
     init(text: String, foregroundApplicationName: String?) {
+        id = UUID()
         self.text = text
         let now = Date()
         detectedAt = now
@@ -23,17 +24,44 @@ struct DetectedClipboardItem: Identifiable {
 
 @MainActor
 final class ClipboardMonitor: NSObject, ObservableObject {
-    @Published private(set) var recentItems: [DetectedClipboardItem] = []
+    @Published private(set) var recentItems: [DetectedClipboardItem] = [] {
+        didSet {
+            if hasLoadedHistory { historyStore.save(recentItems) }
+        }
+    }
 
+    private let historyStore = ClipboardHistoryStore()
+    private var hasLoadedHistory = false
+    private var clearWhenLoaded = false
+    private var isRunning = false
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount = 0
     private var timer: Timer?
 
     func start() {
-        guard timer == nil else { return }
+        guard !isRunning else { return }
+        isRunning = true
 
         // Observe changes made after launch without logging existing clipboard text.
         lastChangeCount = pasteboard.changeCount
+        guard hasLoadedHistory else {
+            historyStore.load { [weak self] items in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+                    self.recentItems = self.clearWhenLoaded ? [] : Self.restore(items)
+                    self.hasLoadedHistory = true
+                    if self.clearWhenLoaded {
+                        self.clearWhenLoaded = false
+                    }
+                    self.startTimer()
+                }
+            }
+            return
+        }
+        startTimer()
+    }
+
+    private func startTimer() {
         let timer = Timer(
             timeInterval: 0.25,
             target: self,
@@ -47,8 +75,10 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     }
 
     func stop() {
+        isRunning = false
         timer?.invalidate()
         timer = nil
+        historyStore.flush()
     }
 
     func copy(_ item: DetectedClipboardItem) {
@@ -94,7 +124,28 @@ final class ClipboardMonitor: NSObject, ObservableObject {
     }
 
     func clearAll() {
+        guard hasLoadedHistory else {
+            clearWhenLoaded = true
+            historyStore.save([])
+            return
+        }
         recentItems.removeAll()
+    }
+
+    private static func restore(_ items: [DetectedClipboardItem]) -> [DetectedClipboardItem] {
+        var seen = Set<UUID>()
+        var pinnedCount = 0
+        var restored: [DetectedClipboardItem] = []
+        for var item in items {
+            guard !item.text.isEmpty, seen.insert(item.id).inserted else { continue }
+            if item.isPinned {
+                pinnedCount += 1
+                if pinnedCount > 5 { item.isPinned = false }
+            }
+            restored.append(item)
+            if restored.count == 40 { break }
+        }
+        return restored
     }
 
     @objc private func checkForChanges() {
